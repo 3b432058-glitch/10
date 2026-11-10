@@ -1,0 +1,185 @@
+<!doctype html>
+<html lang="zh-Hant">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>W10 Fetch API｜MyMemory 即時翻譯</title>
+<style>
+  :root{--bg:#f6f7fb;--card:#fff;--text:#1f2430;--muted:#6b7280;--line:#e3e6ee;--accent:#2f6fed;--accent-d:#1f55c4;--ok:#157f3c;--err:#b42318;--errbg:#fef3f2}
+  @media (prefers-color-scheme:dark){:root{--bg:#14161c;--card:#1d2028;--text:#e8eaf0;--muted:#9aa3b2;--line:#2c313c;--accent:#6b9bff;--accent-d:#8fb2ff;--ok:#4ade80;--err:#fda29b;--errbg:#3a1a17}}
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:16px/1.6 system-ui,"Noto Sans TC","Microsoft JhengHei",sans-serif}
+  main{max-width:720px;margin:0 auto;padding:24px 16px 48px}
+  h1{font-size:1.5rem;margin:0 0 4px}
+  .sub{color:var(--muted);margin:0 0 20px;font-size:.92rem}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:16px}
+  label{display:block;font-size:.85rem;color:var(--muted);margin-bottom:4px}
+  textarea,select{width:100%;padding:10px;border:1px solid var(--line);border-radius:8px;background:var(--bg);color:var(--text);font:inherit}
+  textarea{min-height:90px;resize:vertical}
+  .row{display:flex;gap:12px;flex-wrap:wrap;margin-top:12px}
+  .row>div{flex:1;min-width:140px}
+  .btns{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  button{padding:10px 16px;border-radius:8px;border:1px solid var(--accent);background:var(--accent);color:#fff;font:inherit;cursor:pointer}
+  button.ghost{background:transparent;color:var(--accent)}
+  button:hover:not(:disabled){background:var(--accent-d);color:#fff}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  #status{min-height:1.5em;font-size:.9rem;color:var(--muted)}
+  #status.error{color:var(--err);background:var(--errbg);padding:8px 12px;border-radius:8px}
+  #result{font-size:1.4rem;font-weight:600;word-break:break-word}
+  .meta{color:var(--muted);font-size:.85rem;margin-top:6px}
+  .tag{display:inline-block;padding:1px 8px;border-radius:99px;border:1px solid var(--line);font-size:.8rem;color:var(--ok)}
+  ul{list-style:none;padding:0;margin:8px 0 0}
+  li{padding:8px 0;border-top:1px solid var(--line);font-size:.92rem}
+  li small{color:var(--muted);display:block}
+  footer{color:var(--muted);font-size:.8rem}
+  footer a{color:var(--accent)}
+</style>
+</head>
+<body>
+<main>
+  <h1>即時翻譯小工具</h1>
+  <p class="sub">用 <code>fetch</code> + <code>async/await</code> 呼叫 MyMemory 公開 API（免金鑰）</p>
+
+  <section class="card">
+    <label for="q">要翻譯的文字</label>
+    <textarea id="q" maxlength="500">Hello World!</textarea>
+    <div class="row">
+      <div>
+        <label for="from">來源語言</label>
+        <select id="from"></select>
+      </div>
+      <div>
+        <label for="to">目標語言</label>
+        <select id="to"></select>
+      </div>
+    </div>
+    <div class="btns">
+      <button id="go">翻譯</button>
+      <button id="refetch" class="ghost" disabled>🔄 重新抓取</button>
+      <button id="sample" class="ghost">隨機範例</button>
+    </div>
+  </section>
+
+  <p id="status" role="status" aria-live="polite"></p>
+
+  <section class="card" id="out" hidden>
+    <div id="result"></div>
+    <div class="meta" id="meta"></div>
+    <ul id="matches"></ul>
+  </section>
+
+  <footer>
+    資料來源：<a href="https://mymemory.translated.net/doc/spec.php" target="_blank" rel="noopener">MyMemory Translation API</a>（translated.net）。
+    匿名使用每日有字數上限，翻譯為機器／翻譯記憶庫結果，僅供參考。
+  </footer>
+</main>
+
+<script>
+const API = "https://api.mymemory.translated.net/get";
+const LANGS = [
+  ["en","English"],["zh-TW","繁體中文"],["ja","日本語"],["ko","한국어"],
+  ["it","Italiano"],["fr","Français"],["es","Español"],["de","Deutsch"]
+];
+const SAMPLES = [
+  ["Hello World!","en","it"],["今天天氣很好","zh-TW","en"],
+  ["Where is the train station?","en","zh-TW"],["Good morning","en","ja"],
+  ["謝謝你的幫忙","zh-TW","ko"]
+];
+
+const $ = id => document.getElementById(id);
+const el = {q:$("q"),from:$("from"),to:$("to"),go:$("go"),refetch:$("refetch"),sample:$("sample"),
+  status:$("status"),out:$("out"),result:$("result"),meta:$("meta"),matches:$("matches")};
+
+let lastQuery = null;   // 記住最後一次查詢，給「重新抓取」使用
+let busy = false;
+
+for (const [code,name] of LANGS) {
+  el.from.add(new Option(`${name} (${code})`, code));
+  el.to.add(new Option(`${name} (${code})`, code));
+}
+el.from.value = "en"; el.to.value = "zh-TW";
+
+function setStatus(msg, isError=false){
+  el.status.textContent = msg;
+  el.status.className = isError ? "error" : "";
+}
+function setBusy(b){
+  busy = b;
+  el.go.disabled = b;
+  el.sample.disabled = b;
+  el.refetch.disabled = b || !lastQuery;
+}
+
+async function translate(query){
+  const {q, from, to} = query;
+  const url = `${API}?q=${encodeURIComponent(q)}&langpair=${encodeURIComponent(from + "|" + to)}`;
+
+  setBusy(true);
+  setStatus("載入中…");
+  try {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+
+    // MyMemory 即使出錯，HTTP 也常是 200，真正的狀態在 body.responseStatus（可能是字串 "403"）
+    if (Number(data.responseStatus) !== 200) {
+      throw new Error(`API 回應 ${data.responseStatus}：${data.responseDetails || "未知錯誤"}`);
+    }
+    if (data.quotaFinished) throw new Error("今日免費額度已用完，請明天再試。");
+
+    render(data, query);
+    lastQuery = query;
+    setStatus("");
+  } catch (err) {
+    const msg = err instanceof TypeError ? "網路連線失敗，請檢查網路後按「重新抓取」。" : err.message;
+    setStatus("❌ " + msg, true);
+  } finally {
+    setBusy(false);
+  }
+}
+
+function render(data, {q, from, to}){
+  el.out.hidden = false;
+  el.result.textContent = data.responseData.translatedText;
+
+  const score = Number(data.responseData.match);
+  const time = new Date().toLocaleTimeString("zh-TW");
+  el.meta.replaceChildren();
+  el.meta.append(`${from} → ${to}｜原文：${q}｜抓取時間 ${time}｜相符度 `);
+  const tag = document.createElement("span");
+  tag.className = "tag";
+  tag.textContent = isNaN(score) ? "—" : Math.round(score * 100) + "%";
+  el.meta.append(tag);
+
+  el.matches.replaceChildren();
+  const list = Array.isArray(data.matches) ? data.matches : [];
+  for (const m of list.slice(0,4)) {
+    const li = document.createElement("li");
+    li.textContent = `${m.segment} → ${m.translation}`;
+    const s = document.createElement("small");
+    s.textContent = `${m.source} → ${m.target}｜來源 ${m["created-by"] || "未知"}｜相符 ${Math.round(Number(m.match)*100)}%`;
+    li.append(s);
+    el.matches.append(li);
+  }
+}
+
+el.go.addEventListener("click", () => {
+  const q = el.q.value.trim();
+  if (!q) { setStatus("❌ 請先輸入要翻譯的文字。", true); return; }
+  if (el.from.value === el.to.value) { setStatus("❌ 來源與目標語言不能相同。", true); return; }
+  translate({q, from: el.from.value, to: el.to.value});
+});
+
+// 重新抓取：用同一組參數再打一次 API，更新畫面
+el.refetch.addEventListener("click", () => { if (lastQuery && !busy) translate(lastQuery); });
+
+el.sample.addEventListener("click", () => {
+  const [q,f,t] = SAMPLES[Math.floor(Math.random()*SAMPLES.length)];
+  el.q.value = q; el.from.value = f; el.to.value = t;
+  translate({q, from:f, to:t});
+});
+
+translate({q: el.q.value, from: el.from.value, to: el.to.value});
+</script>
+</body>
+</html>
